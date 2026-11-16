@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>诺贝尔文学奖世界地图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    background: radial-gradient(ellipse at 50% 40%, #f7fafd 0%, #e3ebf3 100%);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #chart { width: 100%; height: 100%; }
+
+  /* 顶部标题 */
+  .title {
+    position: absolute; top: 26px; left: 0; right: 0;
+    text-align: center; pointer-events: none; z-index: 10;
+  }
+  .title h1 {
+    font-size: 22px; font-weight: 600; letter-spacing: 3px;
+    color: #2c3e50;
+  }
+  .title p {
+    margin-top: 8px; font-size: 13px; color: #7f8c8d; letter-spacing: 1px;
+  }
+
+  /* 图例 */
+  .legend {
+    position: absolute; left: 28px; bottom: 28px; z-index: 10;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(44, 62, 80, 0.10);
+    border-radius: 10px; padding: 14px 16px;
+    box-shadow: 0 4px 20px rgba(44, 62, 80, 0.10);
+    backdrop-filter: blur(6px);
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 9px;
+    font-size: 13px; color: #2c3e50; padding: 5px 0;
+    cursor: pointer; transition: opacity .18s;
+  }
+  .legend-item:hover { opacity: .68; }
+  .legend-dot {
+    width: 13px; height: 13px; border-radius: 3px;
+    border: 1px solid rgba(0, 0, 0, .16);
+  }
+
+  /* 加载提示 */
+  #loading {
+    position: absolute; inset: 0; z-index: 20;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; background: #eef2f7; transition: opacity .4s;
+  }
+  #loading.hide { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 3px solid rgba(44, 62, 80, .14);
+    border-top-color: #e74c3c;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading span { font-size: 13px; color: #7f8c8d; letter-spacing: 1px; }
+  #err { display: none; max-width: 460px; text-align: center; font-size: 13px; color: #c0392b; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div class="title">
+  <h1>世界地图 · 四大洲</h1>
+  <p>点击任意大洲进入对应页面</p>
+</div>
+
+<div class="legend">
+  <div class="legend-item" data-continent="亚洲"><span class="legend-dot" style="background:#e74c3c"></span>亚洲 · Asia</div>
+  <div class="legend-item" data-continent="欧洲"><span class="legend-dot" style="background:#3498db"></span>欧洲 · Europe</div>
+  <div class="legend-item" data-continent="美洲"><span class="legend-dot" style="background:#27ae60"></span>美洲 · Americas</div>
+  <div class="legend-item" data-continent="非洲"><span class="legend-dot" style="background:#f1c40f"></span>非洲 · 
+Africa</div>
+</div>
+
+<div id="chart"></div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <span id="loading-text">地图加载中…</span>
+  <div id="err"></div>
+</div>
+
+<!-- 1. ECharts 库（CDN） -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+
+<script>
+/* ============================================================
+ *  四大洲世界地图
+ *  - 只绘制四大洲（亚/欧/美/非）的轮廓分界线，内部无国界线
+ *  - 各洲独立配色，悬浮时颜色加深
+ *  - 点击大洲跳转到对应页面
+ * ============================================================ */
+
+// ---------- 配色 ----------
+var COLORS = {
+  '亚洲': '#e74c3c',   // 红
+  '欧洲': '#3498db',   // 蓝
+  '美洲': '#27ae60',   // 绿
+  '非洲': '#f1c40f'    // 黄
+};
+var HOVER_COLORS = {   // 悬浮加深色
+  '亚洲': '#c0392b',
+  '欧洲': '#2471a3',
+  '美洲': '#1e8449',
+  '非洲': '#b7950b'
+};
+// 点击跳转表
+var LINKS = {
+  '亚洲': 'web/asia.html',
+  '欧洲': 'web/europe.html',
+  '美洲': 'web/america.html',
+  '非洲': 'web/africa.html'
+};
+
+// ---------- 世界地图 JSON 数据源 ----------
+// 优先使用 CDN 上的世界地图数据；失败时回退到本地同目录文件。
+var CDN_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json',
+  'https://fastly.jsdelivr.net/npm/echarts@4.9.0/map/json/world.json',
+  'https://unpkg.com/echarts@4.9.0/map/json/world.json'
+];
+// 预计算好的「四大洲融合几何」（已溶解国界线），作为最终渲染数据
+var LOCAL_FALLBACK = 'world-continents.json';
+
+var chart = echarts.init(document.getElementById('chart'), null, { renderer: 'canvas' });
+
+// 将 payload（{name, countries, c}）转换为 ECharts 可用的 GeoJSON
+function payloadToGeoJSON(payload) {
+  var features = payload.map(function (item) {
+    return {
+      type: 'Feature',
+      properties: { name: item.name, countries: item.countries },
+      geometry: {
+        type: 'MultiPolygon',
+        coordinates: item.c.map(function (poly) {
+          return poly.map(function (ring) {
+            return ring.map(function (p) { return [p[0], p[1]]; });
+          });
+        })
+      }
+    };
+  });
+  return { type: 'FeatureCollection', features: features };
+}
+
+function buildOption(geoJSON) {
+  var features = geoJSON.features;
+  // 为每个洲生成独立的 data 项，从而实现「悬浮时该洲颜色加深」
+  var seriesData = features.map(function (f) {
+    var name = f.properties.name;
+    return {
+      name: name,
+      value: 1,
+      itemStyle: {
+        areaColor: COLORS[name] || '#bdc3c7',
+        borderColor: '#2c3e50',
+        borderWidth: 1.1
+      },
+      emphasis: {
+        itemStyle: {
+          areaColor: HOVER_COLORS[name] || '#95a5a6',
+          borderColor: '#1a252f',
+          borderWidth: 1.6
+        }
+      }
+    };
+  });
+
+  return {
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'item',
+      formatter: function (p) {
+        var n = p.name;
+        var c = (p.data && p.data.value) ? '' : '';
+        return '<div style="font-weight:600;font-size:14px">' + n + '</div>' +
+               '<div style="font-size:12px;opacity:.75;margin-top:2px">点击进入该洲页面</div>';
+      },
+      backgroundColor: 'rgba(255,255,255,.96)',
+      borderColor: 'rgba(44,62,80,.12)',
+      borderWidth: 1,
+      padding: [9, 13],
+      textStyle: { color: '#2c3e50', fontSize: 13 },
+      extraCssText: 'border-radius:8px;box-shadow:0 4px 18px rgba(44,62,80,.14);'
+    },
+    series: [{
+      type: 'map',
+      map: 'world',
+      roam: false,          // 禁止拖拽缩放，保持版面稳定
+      zoom: 1,
+      scaleLimit: { min: 1, max: 1 },
+      data: seriesData,
+      itemStyle: {
+        areaColor: '#bdc3c7',
+        borderColor: '#2c3e50',
+        borderWidth: 1.1
+      },
+      emphasis: {
+        itemStyle: { areaColor: '#95a5a6' }
+      },
+      label: { show: false },
+      select: { disabled: true }
+    }]
+  };
+}
+
+// ---------- 数据加载 ----------
+function hideLoading() {
+  var el = document.getElementById('loading');
+  el.classList.add('hide');
+  setTimeout(function () { el.style.display = 'none'; }, 420);
+}
+
+function showError(msg) {
+  document.getElementById('loading-text').style.display = 'none';
+  document.querySelector('#loading .spinner').style.display = 'none';
+  var err = document.getElementById('err');
+  err.style.display = 'block';
+  err.innerHTML = msg;
+}
+
+function render(payload) {
+  var geoJSON = payloadToGeoJSON(payload);
+  echarts.registerMap('world', geoJSON);
+  chart.setOption(buildOption(geoJSON));
+  hideLoading();
+  bindEvents();
+}
+
+// 读取本地预计算几何（file:// 直接双击打开时最可靠）
+function loadLocal() {
+  return fetch(LOCAL_FALLBACK)
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .catch(function () { return null; });
+}
+
+// 读取 CDN 世界地图原始数据
+function loadFromCDN(i) {
+  if (i >= CDN_SOURCES.length) return Promise.reject(new Error('all CDN sources failed'));
+  return fetch(CDN_SOURCES[i])
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .catch(function () { return loadFromCDN(i + 1); });
+}
+
+// 启动：优先本地（快、稳），同时探测 CDN 可用性
+(function init() {
+  loadLocal().then(function (payload) {
+    if (payload && payload.length) {
+      render(payload);
+      // 后台探测 CDN，记录可用性（不影响渲染）
+      loadFromCDN(0).then(function () {
+        console.info('[world-map] CDN 世界地图 JSON 可访问:', CDN_SOURCES[0]);
+      }).catch(function () {
+        console.warn('[world-map] CDN 不可用，已使用本地预计算数据');
+      });
+    } else {
+      // 本地读取失败（可能被 file:// 限制），改用 CDN 原始世界地图
+      loadFromCDN(0).then(function (raw) {
+        render(buildFromRawWorld(raw));
+      }).catch(function () {
+        showError('地图数据加载失败。<br>请确认 <code>world-continents.json</code> 与本页面在同一目录下，<br>或通过本地服务器打开（<code>python -m http.server</code>）。');
+      });
+    }
+  });
+})();
+
+// ---------- 交互 ----------
+function bindEvents() {
+  // 点击大洲 -> 跳转
+  chart.on('click', function (params) {
+    var target = LINKS[params.name];
+    if (target) {
+      // 轻微高亮反馈后跳转
+      chart.dispatchAction({ type: 'downplay', seriesIndex: 0 });
+      setTimeout(function () { window.location.href = target; }, 90);
+    }
+  });
+
+  // 图例：点击同样可跳转
+  document.querySelectorAll('.legend-item').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var t = LINKS[el.getAttribute('data-continent')];
+      if (t) window.location.href = t;
+    });
+  });
+
+  // 窗口尺寸变化自适应
+  window.addEventListener('resize', function () { chart.resize(); });
+}
+
+// 兜底方案：直接用 CDN 的国界数据按洲着色（保留极淡国界线）
+function buildFromRawWorld(raw) {
+  var GROUP = {
+    '亚洲': ['China','Japan','India','Indonesia','Mongolia','Korea','Dem. Rep. Korea','Afghanistan','Bangladesh','Bhutan',
+      'Brunei','Cambodia','Cyprus','N. Cyprus','Georgia','Kazakhstan','Kyrgyzstan','Lao PDR','Malaysia','Maldives','Myanmar',
+      'Nepal','Oman','Pakistan','Philippines','Qatar','Saudi Arabia','Singapore','Sri Lanka','Tajikistan','Thailand',
+      'Timor-Leste','Turkmenistan','Uzbekistan','Vietnam','Armenia','Azerbaijan','Turkey','Iraq','Iran','Israel','Jordan',
+      'Lebanon','Syria','Yemen','Kuwait','United Arab Emirates','Palestine','Bahrain','Egypt'],
+    '欧洲': ['United Kingdom','Ireland','France','Germany','Italy','Spain','Portugal','Belgium','Netherlands','Switzerland',
+      'Austria','Poland','Czech Rep.','Slovakia','Hungary','Romania','Bulgaria','Greece','Croatia','Serbia','Slovenia',
+      'Bosnia and Herz.','Montenegro','Kosovo','Albania','Macedonia','Estonia','Latvia','Lithuania','Sweden','Norway',
+      'Finland','Denmark','Iceland','Luxembourg','Malta','Andorra','Liechtenstein','Monaco','San Marino','Vatican',
+      'Isle of Man','Jersey','Aland','Faeroe Is.','Belarus','Ukraine','Moldova','Russia'],
+    '美洲': ['United States','Canada','Mexico','Brazil','Argentina','Chile','Colombia','Peru','Venezuela','Bolivia','Ecuador',
+      'Paraguay','Uruguay','Guyana','Suriname','Panama','Costa Rica','Nicaragua','Honduras','Guatemala','Belize',
+      'El Salvador','Cuba','Jamaica','Haiti','Dominican Rep.','Trinidad and Tobago','Bahamas','Barbados','Grenada',
+      'Saint Lucia','Antigua and Barb.','Dominica','Puerto Rico','Bermuda','Turks and Caicos Is.','Cayman Is.','Curacao',
+      'Curaçao','Falkland Is.','Montserrat','U.S. Virgin Is.','Saint Barthelemy','Clipperton Is.','St. Pierre and Miquelon',
+      'St. Vin. and Gren.','Guadeloupe','Martinique','Aruba','Br. Indian Ocean Ter.'],
+    '非洲': ['Nigeria','South Africa','Kenya','Algeria','Dem. Rep. Congo','Congo','Ethiopia','Somalia','Sudan','S. Sudan',
+      'Chad','Niger','Mali','Burkina Faso','Senegal','Gambia','Guinea','Guinea-Bissau','Sierra Leone','Liberia',
+      "Côte d'Ivoire",'Ghana','Togo','Benin','Cameroon','Central African Rep.','Gabon','Eq. Guinea','Rwanda','Burundi',
+      'Uganda','Djibouti','Eritrea','Tanzania','Angola','Zambia','Malawi','Mozambique','Zimbabwe','Botswana','Namibia',
+      'Lesotho','Swaziland','Madagascar','Mauritius','Seychelles','Comoros','Tunisia','Libya','Morocco','W. Sahara',
+      'Mauritania','Cape Verde','São Tomé and Principe','Saint Helena','Somaliland','Mayotte','Réunion']
+  };
+  var IN = {};
+  Object.keys(GROUP).forEach(function (k) { GROUP[k].forEach(function (n) { IN[n] = k; }); });
+
+  var features = [];
+  (raw.features || []).forEach(function (f) {
+    var name = f.properties && f.properties.name;
+    var cont = IN[name];
+    if (!cont) return;
+    features.push({
+      type: 'Feature',
+      properties: { name: cont, country: name },
+      geometry: f.geometry
+    });
+  });
+
+  // 合并同一洲的多边形为 MultiPolygon（视觉上仍是单一洲，但保留逐国可交互性由 data 决定）
+  return { type: 'FeatureCollection', features: features };
+}
+// ========== 手动添加的点击跳转逻辑 ==========
+chart.on('click', function (params) {
+    if (params.name === '亚洲') {
+        window.location.href = 'web/asia.html';
+    } 
+    else if (params.name === '欧洲') {
+        window.location.href = 'web/europe.html';
+    } 
+    else if (params.name === '美洲') {
+        window.location.href = 'web/america.html';
+    } 
+    else if (params.name === '非洲') {
+        window.location.href = 'web/africa.html';
+    }
+});
+// ============================================
+</script>
+</body>
+</html>
